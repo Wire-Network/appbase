@@ -7,11 +7,8 @@ execute_process(
    RESULT_VARIABLE res
    WORKING_DIRECTORY @CMAKE_SOURCE_DIR@
 )
-if(NOT ${res} STREQUAL "0")
-  message(FATAL_ERROR "git describe failed")
-endif()
-#unsure if this next is possible but just a failsafe
-if("${VERSION_STRING}" STREQUAL "")
+if((NOT ${res} STREQUAL "0") OR ("${VERSION_STRING}" STREQUAL ""))
+  message(WARNING "git describe failed. Hardcoded appbase_version_string will be set to 'unknown'.")
   set(VERSION_STRING "unknown")
 endif()
 
