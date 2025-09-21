@@ -22,7 +22,10 @@ set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads)
 
 if(NOT TARGET Boost::program_options)
-   find_package(Boost 1.67 REQUIRED COMPONENTS program_options system)
+  find_package(Boost 1.83 EXACT REQUIRED COMPONENTS program_options system)
+  if(NOT TARGET Boost::program_options)
+    message(FATAL_ERROR "Boost::program_options not found")
+  endif()
 endif()
 
 if( APPLE )
