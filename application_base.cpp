@@ -1,8 +1,7 @@
-#include <appbase/application.hpp>
+#include <appbase/application_base.hpp>
 #include <appbase/version.hpp>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/filesystem.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <boost/algorithm/string.hpp>
 
@@ -26,41 +25,55 @@ using any_type_compare_map = std::unordered_map<std::type_index, std::function<b
 
 class application_impl {
    public:
+
+#ifdef _WIN32
+      application_impl():_app_options("Application Options"){}
+#else
+
       application_impl():_app_options("Application Options"){
-#ifndef _WIN32
          // Create a separate thread to handle signals, so that they don't interrupt I/O.
          // stdio does not recover from EINTR.
-         _signal_catching_io_ctx.emplace();
-         _signal_catching_thread = std::thread([&ioctx = *_signal_catching_io_ctx]() {
+         _signal_catching_thread = std::thread([&ioctx = _signal_catching_io_ctx]() {
             auto workwork = boost::asio::make_work_guard(ioctx);
             ioctx.run();
          });
 
+         // after creating the thread for handling signals, we can block signals in the current thread
          sigset_t blocked_signals;
-         sigemptyset(&blocked_signals);
-         sigaddset(&blocked_signals, SIGINT);
-         sigaddset(&blocked_signals, SIGTERM);
-         sigaddset(&blocked_signals, SIGPIPE);
-         sigaddset(&blocked_signals, SIGHUP);
+         get_target_sigset(&blocked_signals);
          pthread_sigmask(SIG_BLOCK, &blocked_signals, nullptr);
-#endif
+      }
+
+      void get_target_sigset(sigset_t* blocked_signals) {
+         sigemptyset(blocked_signals);
+         sigaddset(blocked_signals, SIGINT);
+         sigaddset(blocked_signals, SIGTERM);
+         sigaddset(blocked_signals, SIGPIPE);
+         sigaddset(blocked_signals, SIGHUP);
       }
 
       ~application_impl() {
          if(_signal_catching_thread.joinable()) {
-            _signal_catching_io_ctx->stop();
+            _signal_catching_io_ctx.stop();
             _signal_catching_thread.join();
          }
+
+         // need to unblock signals, otherwise next thread created will inherit blocked signals
+         sigset_t blocked_signals;
+         get_target_sigset(&blocked_signals);
+         pthread_sigmask(SIG_UNBLOCK, &blocked_signals, nullptr);
       }
+#endif
 
       options_description     _app_options;
       options_description     _cfg_options;
       variables_map           _options;
+      std::vector<bpo::basic_option<char>> _parsed_options;
 
-      bfs::path               _data_dir{"data-dir"};
-      bfs::path               _config_dir{"config-dir"};
-      bfs::path               _logging_conf{"logging.json"};
-      bfs::path               _config_file_name;
+      std::filesystem::path   _data_dir{"data-dir"};
+      std::filesystem::path   _config_dir{"config-dir"};
+      std::filesystem::path   _logging_conf{"logging.json"};
+      std::filesystem::path   _config_file_name;
 
       uint64_t                _version = 0;
       std::string             _version_str = appbase_version_string;
@@ -71,13 +84,11 @@ class application_impl {
       any_type_compare_map    _any_compare_map;
 
       std::thread             _signal_catching_thread;
-      std::optional<boost::asio::io_context> _signal_catching_io_ctx;
+      boost::asio::io_context _signal_catching_io_ctx;
 };
 
-application::application()
-:my(new application_impl()){
-   io_serv = std::make_shared<boost::asio::io_service>();
-
+application_base::application_base(std::shared_ptr<void>&& e) :
+ executor_ptr(std::move(e)), my(new application_impl()){
    register_config_type<std::string>();
    register_config_type<bool>();
    register_config_type<unsigned short>();
@@ -90,48 +101,48 @@ application::application()
    register_config_type<long long>();
    register_config_type<double>();
    register_config_type<std::vector<std::string>>();
-   register_config_type<boost::filesystem::path>();
+   register_config_type<std::filesystem::path>();
 }
 
-application::~application() { }
+application_base::~application_base() { }
 
-void application::set_version(uint64_t version) {
+void application_base::set_version(uint64_t version) {
   my->_version = version;
 }
 
-uint64_t application::version() const {
+uint64_t application_base::version() const {
   return my->_version;
 }
 
-string application::version_string() const {
+string application_base::version_string() const {
    return my->_version_str;
 }
 
-void application::set_version_string( std::string v ) {
+void application_base::set_version_string( std::string v ) {
    my->_version_str = std::move( v );
 }
 
-string application::full_version_string() const {
+string application_base::full_version_string() const {
    return my->_full_version_str;
 }
 
-void application::set_full_version_string( std::string v ) {
+void application_base::set_full_version_string( std::string v ) {
    my->_full_version_str = std::move( v );
 }
 
-void application::set_default_data_dir(const bfs::path& data_dir) {
+void application_base::set_default_data_dir(const std::filesystem::path& data_dir) {
   my->_data_dir = data_dir;
 }
 
-void application::set_default_config_dir(const bfs::path& config_dir) {
+void application_base::set_default_config_dir(const std::filesystem::path& config_dir) {
   my->_config_dir = config_dir;
 }
 
-bfs::path application::get_logging_conf() const {
+std::filesystem::path application_base::get_logging_conf() const {
   return my->_logging_conf;
 }
 
-void application::wait_for_signal(std::shared_ptr<boost::asio::signal_set> ss) {
+void application_base::wait_for_signal(std::shared_ptr<boost::asio::signal_set> ss) {
    ss->async_wait([this, ss](const boost::system::error_code& ec, int) {
       if(ec)
          return;
@@ -140,31 +151,16 @@ void application::wait_for_signal(std::shared_ptr<boost::asio::signal_set> ss) {
    });
 }
 
-void application::setup_signal_handling_on_ios(boost::asio::io_service& ios, bool startup) {
-   std::shared_ptr<boost::asio::signal_set> ss = std::make_shared<boost::asio::signal_set>(ios, SIGINT, SIGTERM);
+std::shared_ptr<boost::asio::signal_set> application_base::setup_signal_handling_on_ioc(boost::asio::io_context& io_ctx) {
+   std::shared_ptr<boost::asio::signal_set> ss = std::make_shared<boost::asio::signal_set>(io_ctx, SIGINT, SIGTERM);
 #ifdef SIGPIPE
    ss->add(SIGPIPE);
 #endif
-#ifdef SIGHUP
-   if( startup ) {
-      ss->add(SIGHUP);
-   }
-#endif
    wait_for_signal(ss);
+   return ss;
 }
 
-void application::startup() {
-   //during startup, run a second thread to catch SIGINT/SIGTERM/SIGPIPE/SIGHUP
-   boost::asio::io_service startup_thread_ios;
-   setup_signal_handling_on_ios(startup_thread_ios, true);
-   std::thread startup_thread([&startup_thread_ios]() {
-      startup_thread_ios.run();
-   });
-   auto clean_up_signal_thread = [&startup_thread_ios, &startup_thread]() {
-      startup_thread_ios.stop();
-      startup_thread.join();
-   };
-
+void application_base::startup(boost::asio::io_context& io_ctx) {
    try {
       for( auto plugin : initialized_plugins ) {
          if( is_quiting() ) break;
@@ -172,26 +168,21 @@ void application::startup() {
       }
 
    } catch( ... ) {
-      clean_up_signal_thread();
-      shutdown();
+      shutdown_plugins();
       throw;
    }
 
-   //after startup, shut down the signal handling thread and catch the signals back on main io_service
-   clean_up_signal_thread();
-   setup_signal_handling_on_ios(get_io_service(), false);
-
 #ifdef SIGHUP
-   std::shared_ptr<boost::asio::signal_set> sighup_set(new boost::asio::signal_set(get_io_service(), SIGHUP));
+   std::shared_ptr<boost::asio::signal_set> sighup_set(new boost::asio::signal_set(io_ctx, SIGHUP));
    start_sighup_handler( sighup_set );
 #endif
 }
 
-void application::start_sighup_handler( std::shared_ptr<boost::asio::signal_set> sighup_set ) {
+void application_base::start_sighup_handler( std::shared_ptr<boost::asio::signal_set> sighup_set ) {
 #ifdef SIGHUP
    sighup_set->async_wait([sighup_set, this](const boost::system::error_code& err, int /*num*/) {
       if( err ) return;
-      app().post(priority::medium, [sighup_set, this]() {
+      post_cb(priority::medium, [sighup_set, this]() {
          sighup_callback();
          for( auto plugin : initialized_plugins ) {
             if( is_quiting() ) return;
@@ -203,17 +194,11 @@ void application::start_sighup_handler( std::shared_ptr<boost::asio::signal_set>
 #endif
 }
 
-application& application::instance() {
-   static application _app;
-   return _app;
-}
-application& app() { return application::instance(); }
-
-void application::register_config_type_comparison(std::type_index i, config_comparison_f comp) {
+void application_base::register_config_type_comparison(std::type_index i, config_comparison_f comp) {
    my->_any_compare_map.emplace(i, comp);
 }
 
-void application::set_program_options()
+void application_base::set_program_options()
 {
    for(auto& plug : plugins) {
       boost::program_options::options_description plugin_cli_opts("Command Line Options for " + plug.second->name());
@@ -240,19 +225,21 @@ void application::set_program_options()
          ("data-dir,d", bpo::value<std::string>(), "Directory containing program runtime data")
          ("config-dir", bpo::value<std::string>(), "Directory containing configuration files such as config.ini")
          ("config,c", bpo::value<std::string>()->default_value( "config.ini" ), "Configuration file name relative to config-dir")
-         ("logconf,l", bpo::value<std::string>()->default_value( "logging.json" ), "Logging configuration file name/path for library users");
+         ("logconf,l", bpo::value<std::string>()->default_value( "logging.json" ),
+            "Logging configuration file name/path for library users (absolute path or relative to application config dir)");
 
    my->_cfg_options.add(app_cfg_opts);
    my->_app_options.add(app_cfg_opts);
    my->_app_options.add(app_cli_opts);
 }
 
-bool application::initialize_impl(int argc, char** argv, vector<abstract_plugin*> autostart_plugins) {
+bool application_base::initialize_impl(int argc, char** argv, vector<abstract_plugin*> autostart_plugins, std::function<void()> initialize_logging) {
    set_program_options();
 
    bpo::variables_map& options = my->_options;
    try {
       bpo::parsed_options parsed = bpo::command_line_parser(argc, argv).options(my->_app_options).run();
+      my->_parsed_options = parsed.options;
       bpo::store(parsed, options);
       vector<string> positionals = bpo::collect_unrecognized(parsed.options, bpo::include_positional);
       if(!positionals.empty())
@@ -284,38 +271,43 @@ bool application::initialize_impl(int argc, char** argv, vector<abstract_plugin*
    if( options.count( "data-dir" ) ) {
       // Workaround for 10+ year old Boost defect
       // See https://svn.boost.org/trac10/ticket/8535
-      // Should be .as<bfs::path>() but paths with escaped spaces break bpo e.g.
+      // Should be .as<std::filesystem::path>() but paths with escaped spaces break bpo e.g.
       // std::exception::what: the argument ('/path/with/white\ space') for option '--data-dir' is invalid
       auto workaround = options["data-dir"].as<std::string>();
-      bfs::path data_dir = workaround;
+      std::filesystem::path data_dir = workaround;
       if( data_dir.is_relative() )
-         data_dir = bfs::current_path() / data_dir;
+         data_dir = std::filesystem::current_path() / data_dir;
       my->_data_dir = data_dir;
    }
 
    if( options.count( "config-dir" ) ) {
       auto workaround = options["config-dir"].as<std::string>();
-      bfs::path config_dir = workaround;
+      std::filesystem::path config_dir = workaround;
       if( config_dir.is_relative() )
-         config_dir = bfs::current_path() / config_dir;
+         config_dir = std::filesystem::current_path() / config_dir;
       my->_config_dir = config_dir;
    }
 
    auto workaround = options["logconf"].as<std::string>();
-   bfs::path logconf = workaround;
+   std::filesystem::path logconf = workaround;
    if( logconf.is_relative() )
       logconf = my->_config_dir / logconf;
    my->_logging_conf = logconf;
+   if(workaround != "logging.json" && !std::filesystem::exists(my->_logging_conf)) {
+      // when logconf is explicitly specified, we must ensure the file exists
+      std::cerr << "Logging configuration file " << my->_logging_conf << " missing." << std::endl;
+      return false;
+   }
 
    workaround = options["config"].as<std::string>();
    my->_config_file_name = workaround;
    if( my->_config_file_name.is_relative() )
       my->_config_file_name = my->_config_dir / my->_config_file_name;
 
-   if(!bfs::exists(my->_config_file_name)) {
+   if(!std::filesystem::exists(my->_config_file_name)) {
       if(my->_config_file_name.compare(my->_config_dir / "config.ini") != 0)
       {
-         cout << "Config file " << my->_config_file_name << " missing." << std::endl;
+         std::cerr << "Config file " << my->_config_file_name << " missing." << std::endl;
          return false;
       }
       write_default_config(my->_config_file_name);
@@ -324,6 +316,8 @@ bool application::initialize_impl(int argc, char** argv, vector<abstract_plugin*
    std::vector< bpo::basic_option<char> > opts_from_config;
    try {
       bpo::parsed_options parsed_opts_from_config = bpo::parse_config_file<char>(my->_config_file_name.make_preferred().string().c_str(), my->_cfg_options, false);
+      my->_parsed_options.reserve(my->_parsed_options.size() + parsed_opts_from_config.options.size());
+      my->_parsed_options.insert(my->_parsed_options.end(), parsed_opts_from_config.options.begin(), parsed_opts_from_config.options.end());
       bpo::store(parsed_opts_from_config, options);
       opts_from_config = parsed_opts_from_config.options;
    } catch( const boost::program_options::unknown_option& e ) {
@@ -372,56 +366,123 @@ bool application::initialize_impl(int argc, char** argv, vector<abstract_plugin*
       std::cerr << "         removing these items." << std::endl;
    }
 
-   if(options.count("plugin") > 0)
-   {
-      auto plugins = options.at("plugin").as<std::vector<std::string>>();
-      for(auto& arg : plugins)
-      {
-         vector<string> names;
-         boost::split(names, arg, boost::is_any_of(" \t,"));
-         for(const std::string& name : names)
-            get_plugin(name).initialize(options);
-      }
-   }
+   // Initialize user provided logging now so it is available during plugins' initialization
+   if (initialize_logging)
+      initialize_logging();
+
+   std::string plugin_name;
+   auto error_header = [&]() { return std::string("appbase: exception thrown during plugin \"") + plugin_name + "\" initialization.\n"; };
+
+   // setup handling of SIGINT/SIGTERM/SIGPIPE during initialize
+   auto ss = setup_signal_handling_on_ioc(my->_signal_catching_io_ctx);
+
    try {
+      if(options.count("plugin") > 0)
+      {
+         auto plugins = options.at("plugin").as<std::vector<std::string>>();
+         for(auto& arg : plugins)
+         {
+            vector<string> names;
+            boost::split(names, arg, boost::is_any_of(" \t,"));
+            for(const std::string& name : names) {
+               plugin_name = name;
+               get_plugin(name).initialize(options);
+            }
+         }
+      }
+
       for (auto plugin : autostart_plugins)
-         if (plugin != nullptr && plugin->get_state() == abstract_plugin::registered)
+         if (plugin != nullptr && plugin->get_state() == abstract_plugin::registered) {
+            plugin_name = plugin->name();
             plugin->initialize(options);
+         }
 
       bpo::notify(options);
+   } catch ( const boost::exception& e ) {
+      std::cerr << error_header() << boost::diagnostic_information(e) << "\n";
+      throw;
+   } catch ( const std::exception& e ) {
+      std::cerr << error_header() << e.what() << "\n";
+      throw;
    } catch (...) {
-      std::cerr << "Failed to initialize\n";
-      return false;
+      std::cerr << error_header();
+      throw;
    }
 
    return true;
 }
 
-void application::shutdown() {
-   for(auto ritr = running_plugins.rbegin();
-       ritr != running_plugins.rend(); ++ritr) {
-      (*ritr)->shutdown();
+void application_base::handle_exception(std::exception_ptr eptr, std::string_view origin) {
+   try {
+      if (eptr)
+         std::rethrow_exception(eptr);
+   } catch(const std::exception& e) {
+      std::cerr << "Caught " << origin << " exception: \"" << e.what() << "\"\n";
+   } catch(...) {
+      std::cerr << "Caught unknown " << origin << " exception.\n";
    }
-   for(auto ritr = running_plugins.rbegin();
-       ritr != running_plugins.rend(); ++ritr) {
-      plugins.erase((*ritr)->name());
-   }
-   running_plugins.clear();
-   initialized_plugins.clear();
-   plugins.clear();
-   quit();
 }
 
-void application::quit() {
-   my->_is_quiting = true;
-   io_serv->stop();
+void application_base::shutdown_plugins() {
+   std::exception_ptr eptr = nullptr;
+
+   for(auto ritr = running_plugins.rbegin();
+       ritr != running_plugins.rend(); ++ritr) {
+      try {
+         (*ritr)->shutdown();
+      } catch(...) {
+         if (!eptr)
+            eptr = std::current_exception();
+         handle_exception(std::current_exception(), (*ritr)->name());
+      }
+   }
+
+   // if we caught an exception while shutting down a plugin, rethrow it so that main()
+   // can catch it and report the error
+   if (eptr)
+      std::rethrow_exception(eptr);
 }
 
-bool application::is_quiting() const {
+void application_base::destroy_plugins() {
+   std::exception_ptr eptr = nullptr;
+
+   for(auto ritr = running_plugins.rbegin(); ritr != running_plugins.rend(); ++ritr) {
+      try {
+         plugins.erase((*ritr)->name());
+      } catch(...) {
+         if (!eptr)
+            eptr = std::current_exception();
+         std::string origin = (*ritr)->name() + " destructor";
+         handle_exception(std::current_exception(), origin);
+      }
+   }
+   try {
+      running_plugins.clear();
+      initialized_plugins.clear();
+      plugins.clear();
+   } catch(...) {
+      if (!eptr)
+         eptr = std::current_exception();
+      handle_exception(std::current_exception(), "plugin cleanup");
+   }
+
+   // if we caught an exception while shutting down a plugin, rethrow it so that main()
+   // can catch it and report the error
+   if (eptr)
+      std::rethrow_exception(eptr);
+}
+
+void application_base::quit() {
+   const bool already_quitting = my->_is_quiting.exchange(true);
+   if (!already_quitting)
+      stop_executor_cb();
+}
+
+bool application_base::is_quiting() const {
    return my->_is_quiting;
 }
 
-void application::set_thread_priority_max() {
+void application_base::set_thread_priority_max() {
 #if __has_include(<pthread.h>)
    pthread_t this_thread = pthread_self();
    struct sched_param params{};
@@ -439,32 +500,16 @@ void application::set_thread_priority_max() {
 #endif
 }
 
-void application::exec() {
-   {
-      boost::asio::io_service::work work(*io_serv);
-      (void)work;
-      bool more = true;
-      while( more || io_serv->run_one() ) {
-         while( io_serv->poll_one() ) {}
-         // execute the highest priority item
-         more = pri_queue.execute_highest();
-      }
+void application_base::write_default_config(const std::filesystem::path& cfg_file) {
+   if(!std::filesystem::exists(cfg_file.parent_path()))
+      std::filesystem::create_directories(cfg_file.parent_path());
 
-      shutdown(); /// perform synchronous shutdown
-   }
-   io_serv.reset();
-}
-
-void application::write_default_config(const bfs::path& cfg_file) {
-   if(!bfs::exists(cfg_file.parent_path()))
-      bfs::create_directories(cfg_file.parent_path());
-
-   std::ofstream out_cfg( bfs::path(cfg_file).make_preferred().string());
+   std::ofstream out_cfg( std::filesystem::path(cfg_file).make_preferred().string());
    print_default_config(out_cfg);
    out_cfg.close();
 }
 
-void application::print_default_config(std::ostream& os) {
+void application_base::print_default_config(std::ostream& os) {
    std::map<std::string, std::string> option_to_plug;
    for(auto& plug : plugins) {
       boost::program_options::options_description plugin_cli_opts;
@@ -508,7 +553,7 @@ void application::print_default_config(std::ostream& os) {
    }
 }
 
-abstract_plugin* application::find_plugin(const string& name)const
+abstract_plugin* application_base::find_plugin(const string& name)const
 {
    auto itr = plugins.find(name);
    if(itr == plugins.end()) {
@@ -517,31 +562,44 @@ abstract_plugin* application::find_plugin(const string& name)const
    return itr->second.get();
 }
 
-abstract_plugin& application::get_plugin(const string& name)const {
+abstract_plugin& application_base::get_plugin(const string& name)const {
    auto ptr = find_plugin(name);
    if(!ptr)
       BOOST_THROW_EXCEPTION(std::runtime_error("unable to find plugin: " + name));
    return *ptr;
 }
 
-bfs::path application::data_dir() const {
+std::filesystem::path application_base::data_dir() const {
    return my->_data_dir;
 }
 
-bfs::path application::config_dir() const {
+std::filesystem::path application_base::config_dir() const {
    return my->_config_dir;
 }
 
-bfs::path application::full_config_file_path() const {
-   return bfs::canonical(my->_config_file_name);
+std::filesystem::path application_base::full_config_file_path() const {
+   return std::filesystem::canonical(my->_config_file_name);
 }
 
-void application::set_sighup_callback(std::function<void()> callback) {
+void application_base::set_sighup_callback(std::function<void()> callback) {
    sighup_callback = callback;
 }
 
-const bpo::variables_map& application::get_options() const{
-      return my->_options;
+const bpo::variables_map& application_base::get_options() const{
+   return my->_options;
+}
+
+const std::vector<bpo::basic_option<char>>& application_base::get_parsed_options() const {
+   return my->_parsed_options;
 }
 
 } /// namespace appbase
+
+// ----------------------------------------------------------------------------------------
+// Add the following include to avoid the warning:
+//    warning: ‘appbase::application& appbase::app()’ declared ‘static’ but never defined
+//
+// and add it at the end of the file to make sure the `application` type is not used in the
+// above functions.
+// ----------------------------------------------------------------------------------------
+#include <appbase/application.hpp>

@@ -1,6 +1,6 @@
 # Defines AppBase library target.
+cmake_minimum_required( VERSION 3.8...3.31 )
 project( AppBase )
-cmake_minimum_required( VERSION 3.5 )
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules")
 
@@ -10,10 +10,10 @@ file(GLOB HEADERS "include/appbase/*.hpp")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS "ON")
 
-if(CMAKE_CXX_STANDARD EQUAL 98 OR CMAKE_CXX_STANDARD LESS 14)
-   message(FATAL_ERROR "appbase requires c++14 or newer")
+if(CMAKE_CXX_STANDARD EQUAL 98 OR CMAKE_CXX_STANDARD LESS 17)
+   message(FATAL_ERROR "appbase requires c++17 or newer")
 elseif(NOT CMAKE_CXX_STANDARD)
-   set(CMAKE_CXX_STANDARD 14)
+   set(CMAKE_CXX_STANDARD 17)
    set(CMAKE_CXX_STANDARD_REQUIRED ON)
 endif()
 
@@ -21,7 +21,12 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads)
 
-find_package(Boost 1.60 REQUIRED COMPONENTS filesystem program_options)
+if(NOT TARGET Boost::program_options)
+  find_package(Boost 1.83 EXACT REQUIRED COMPONENTS program_options system)
+  if(NOT TARGET Boost::program_options)
+    message(FATAL_ERROR "Boost::program_options not found")
+  endif()
+endif()
 
 if( APPLE )
   # Apple Specific Options Here
@@ -42,11 +47,21 @@ if(ENABLE_COVERAGE_TESTING)
 endif()
 
 add_library( appbase
-             application.cpp
+             application_base.cpp
              ${HEADERS}
            )
 
-target_link_libraries( appbase Boost::program_options Boost::filesystem Threads::Threads)
+target_link_libraries( appbase PUBLIC Boost::program_options Boost::system Threads::Threads)
+
+if(TARGET Boost::asio)
+   target_link_libraries( appbase PUBLIC Boost::asio Boost::signals2 )
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 8 AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    target_link_libraries( appbase PUBLIC stdc++fs )
+  endif()
+endif()
 
 target_include_directories( appbase
                             PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -82,3 +97,5 @@ install( TARGETS
 )
 
 add_subdirectory( examples )
+enable_testing()
+add_subdirectory( tests )
