@@ -109,8 +109,11 @@ public:
     */
    template <typename... Plugin>
    bool initialize(int argc, char** argv, std::function<void()> initialize_logging={}) {
-      for (const auto& f : plugin_registrations)
-         f(*this);
+      // REGISTER ALL PLUGINS (EXISTING REGISTRATIONS ARE RESPECTED)
+      (_register_plugin<Plugin>(), ...);
+
+      for (const auto& entry : plugin_registrations)
+         entry.second(*this);
       return initialize_impl(argc, argv, {find_plugin<Plugin>()...}, initialize_logging);
    }
 
@@ -217,9 +220,23 @@ public:
    }
 
    template <typename Plugin>
+   static bool is_registered() {
+      string name = boost::core::demangle(typeid(Plugin).name());
+      for (const auto& entry : plugin_registrations) {
+         if (entry.first == name)
+            return true;
+      }
+      return false;
+   }
+
+   template <typename Plugin>
    static auto& register_plugin() {
       static int bogus = 0;
-      plugin_registrations.push_back([](application_base& app) -> void { app._register_plugin<Plugin>(); });
+      if (is_registered<Plugin>())
+         return bogus;
+
+      string name = boost::core::demangle(typeid(Plugin).name());
+      plugin_registrations.emplace_back(name, [](application_base& app) -> void { app._register_plugin<Plugin>(); });
       return bogus;
    }
 
@@ -334,7 +351,8 @@ private:
    vector<abstract_plugin*> initialized_plugins;          ///< stored in the order they were started running
    vector<abstract_plugin*> running_plugins;              ///< stored in the order they were started running
 
-   inline static std::vector<std::function<void(application_base&)>> plugin_registrations;
+   using plugin_registration_entry = std::pair<std::string, std::function<void(application_base&)>>;
+   inline static std::vector<plugin_registration_entry> plugin_registrations;
 
    void start_sighup_handler(std::shared_ptr<boost::asio::signal_set> sighup_set);
    void set_program_options();
