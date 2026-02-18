@@ -27,8 +27,9 @@ struct priority {
 
 class application_base {
 public:
-   ~application_base();
+   using extra_program_options_provider = std::function<void(bpo::options_description&, bpo::options_description&)>;
 
+   ~application_base();
 
    /** @brief Set version
     *
@@ -105,16 +106,18 @@ public:
     * @tparam Plugin List of plugins to initalize even if not mentioned by configuration. For plugins started by
     * configuration settings or dependency resolution, this template has no effect.
     * @param initialize_logging Function pointer that will be invoked to initialize logging
+    * @param extra_program_options_providers List of extra program options providers to use during initialization
     * @return true if the application and plugins were initialized, false or exception on error
     */
    template <typename... Plugin>
-   bool initialize(int argc, char** argv, std::function<void()> initialize_logging={}) {
+   bool initialize(int argc, char** argv, std::function<void()> initialize_logging={},
+      std::vector<application_base::extra_program_options_provider> extra_program_options_providers = {}) {
       // REGISTER ALL PLUGINS (EXISTING REGISTRATIONS ARE RESPECTED)
       (_register_plugin<Plugin>(), ...);
 
       for (const auto& entry : plugin_registrations)
          entry.second(*this);
-      return initialize_impl(argc, argv, {find_plugin<Plugin>()...}, initialize_logging);
+      return initialize_impl(argc, argv, {find_plugin<Plugin>()...}, initialize_logging, extra_program_options_providers);
    }
 
    void startup(boost::asio::io_context& io_ctx);
@@ -314,7 +317,8 @@ protected:
    template <typename Impl>
    friend class plugin;
 
-   bool initialize_impl(int argc, char** argv, vector<abstract_plugin*> autostart_plugins, std::function<void()> initialize_logging);
+   bool initialize_impl(int argc, char** argv, vector<abstract_plugin*> autostart_plugins, std::function<void()> initialize_logging,
+      std::vector<application_base::extra_program_options_provider> extra_program_options_providers = {});
 
    /** these notifications get called from the plugin when their state changes so that
     * the application can call shutdown in the reverse order.
@@ -355,7 +359,8 @@ private:
    inline static std::vector<plugin_registration_entry> plugin_registrations;
 
    void start_sighup_handler(std::shared_ptr<boost::asio::signal_set> sighup_set);
-   void set_program_options();
+
+   void set_program_options(const std::vector<extra_program_options_provider>& option_providers = {});
    void write_default_config(const std::filesystem::path& cfg_file);
    void print_default_config(std::ostream& os);
 

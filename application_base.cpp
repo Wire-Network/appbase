@@ -198,7 +198,7 @@ void application_base::register_config_type_comparison(std::type_index i, config
    my->_any_compare_map.emplace(i, comp);
 }
 
-void application_base::set_program_options()
+void application_base::set_program_options(const std::vector<extra_program_options_provider>& option_providers)
 {
    for(auto& plug : plugins) {
       boost::program_options::options_description plugin_cli_opts("Command Line Options for " + plug.second->name());
@@ -228,13 +228,18 @@ void application_base::set_program_options()
          ("logconf,l", bpo::value<std::string>()->default_value( "logging.json" ),
             "Logging configuration file name/path for library users (absolute path or relative to application config dir)");
 
+   for (auto & op : option_providers ) {
+      op(app_cfg_opts, app_cli_opts);
+   }
+
    my->_cfg_options.add(app_cfg_opts);
    my->_app_options.add(app_cfg_opts);
    my->_app_options.add(app_cli_opts);
 }
 
-bool application_base::initialize_impl(int argc, char** argv, vector<abstract_plugin*> autostart_plugins, std::function<void()> initialize_logging) {
-   set_program_options();
+bool application_base::initialize_impl(int argc, char** argv, vector<abstract_plugin*> autostart_plugins, std::function<void()> initialize_logging,
+   std::vector<application_base::extra_program_options_provider> extra_program_options_providers) {
+   set_program_options(extra_program_options_providers);
 
    bpo::variables_map& options = my->_options;
    try {
