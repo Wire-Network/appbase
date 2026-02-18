@@ -29,9 +29,6 @@ class application_base {
 public:
    using extra_program_options_provider = std::function<void(bpo::options_description&, bpo::options_description&)>;
 
-   /**
-    * Destructor
-    */
    ~application_base();
 
    /** @brief Set version
