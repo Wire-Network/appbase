@@ -106,6 +106,7 @@ public:
     * @tparam Plugin List of plugins to initalize even if not mentioned by configuration. For plugins started by
     * configuration settings or dependency resolution, this template has no effect.
     * @param initialize_logging Function pointer that will be invoked to initialize logging
+    * @param extra_program_options_providers List of extra program options providers to use during initialization
     * @return true if the application and plugins were initialized, false or exception on error
     */
    template <typename... Plugin>
