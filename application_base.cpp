@@ -1,16 +1,17 @@
 #include <appbase/application_base.hpp>
 #include <appbase/version.hpp>
 
-#include <boost/algorithm/string.hpp>
-#include <boost/asio/signal_set.hpp>
+#include <atomic>
 #include <boost/algorithm/string.hpp>
 
+#include <cstring>
 #include <iostream>
 #include <fstream>
 #include <unordered_map>
 #include <future>
 #include <optional>
 
+#include <pthread.h>
 #include <unistd.h>
 #include <signal.h>
 
@@ -28,17 +29,12 @@ class application_impl {
 
 #ifdef _WIN32
       application_impl():_app_options("Application Options"){}
+      // appbase does not provide Windows console-control signal handling.
+      void start_signal_thread(std::function<void(int)>) {}
+      void stop_signal_thread() {}
 #else
 
       application_impl():_app_options("Application Options"){
-         // Create a separate thread to handle signals, so that they don't interrupt I/O.
-         // stdio does not recover from EINTR.
-         _signal_catching_thread = std::thread([&ioctx = _signal_catching_io_ctx]() {
-            auto workwork = boost::asio::make_work_guard(ioctx);
-            ioctx.run();
-         });
-
-         // after creating the thread for handling signals, we can block signals in the current thread
          sigset_t blocked_signals;
          get_target_sigset(&blocked_signals);
          pthread_sigmask(SIG_BLOCK, &blocked_signals, nullptr);
@@ -52,11 +48,53 @@ class application_impl {
          sigaddset(blocked_signals, SIGHUP);
       }
 
-      ~application_impl() {
+      /**
+       * @brief Start the POSIX signal waiter after application callbacks are initialized.
+       */
+      void start_signal_thread(std::function<void(int)> signal_callback) {
+         if(_signal_catching_thread.joinable())
+            return;
+         _signal_callback = std::move(signal_callback);
+         _signal_thread_running.store(true, std::memory_order_release);
+         _signal_catching_thread = std::thread([this]() { signal_loop(); });
+      }
+
+      /**
+       * @brief Stop the POSIX signal waiter without dispatching another shutdown signal.
+       */
+      void stop_signal_thread() {
          if(_signal_catching_thread.joinable()) {
-            _signal_catching_io_ctx.stop();
+            _signal_thread_running.store(false, std::memory_order_release);
+            (void)pthread_kill(_signal_catching_thread.native_handle(), SIGTERM);
             _signal_catching_thread.join();
          }
+      }
+
+      /**
+       * @brief Wait for blocked process signals and dispatch them to appbase.
+       */
+      void signal_loop() {
+         sigset_t blocked_signals;
+         get_target_sigset(&blocked_signals);
+         pthread_sigmask(SIG_BLOCK, &blocked_signals, nullptr);
+
+         while(_signal_thread_running.load(std::memory_order_acquire)) {
+            int signal_number = 0;
+            const int result = sigwait(&blocked_signals, &signal_number);
+            if(result != 0) {
+               std::cerr << "appbase failed waiting for signal: " << std::strerror(result) << std::endl;
+               break;
+            }
+
+            if(!_signal_thread_running.load(std::memory_order_acquire))
+               break;
+
+            _signal_callback(signal_number);
+         }
+      }
+
+      ~application_impl() {
+         stop_signal_thread();
 
          // need to unblock signals, otherwise next thread created will inherit blocked signals
          sigset_t blocked_signals;
@@ -84,7 +122,8 @@ class application_impl {
       any_type_compare_map    _any_compare_map;
 
       std::thread             _signal_catching_thread;
-      boost::asio::io_context _signal_catching_io_ctx;
+      std::atomic_bool        _signal_thread_running{false};
+      std::function<void(int)> _signal_callback;
 };
 
 application_base::application_base(std::shared_ptr<void>&& e) :
@@ -104,7 +143,10 @@ application_base::application_base(std::shared_ptr<void>&& e) :
    register_config_type<std::filesystem::path>();
 }
 
-application_base::~application_base() { }
+application_base::~application_base() {
+   // Stop before callbacks/plugin lists are destroyed; application_impl's destructor is only a final safety net.
+   my->stop_signal_thread();
+}
 
 void application_base::set_version(uint64_t version) {
   my->_version = version;
@@ -142,25 +184,7 @@ std::filesystem::path application_base::get_logging_conf() const {
   return my->_logging_conf;
 }
 
-void application_base::wait_for_signal(std::shared_ptr<boost::asio::signal_set> ss) {
-   ss->async_wait([this, ss](const boost::system::error_code& ec, int) {
-      if(ec)
-         return;
-      quit();
-      wait_for_signal(ss);
-   });
-}
-
-std::shared_ptr<boost::asio::signal_set> application_base::setup_signal_handling_on_ioc(boost::asio::io_context& io_ctx) {
-   std::shared_ptr<boost::asio::signal_set> ss = std::make_shared<boost::asio::signal_set>(io_ctx, SIGINT, SIGTERM);
-#ifdef SIGPIPE
-   ss->add(SIGPIPE);
-#endif
-   wait_for_signal(ss);
-   return ss;
-}
-
-void application_base::startup(boost::asio::io_context& io_ctx) {
+void application_base::startup() {
    try {
       for( auto plugin : initialized_plugins ) {
          if( is_quiting() ) break;
@@ -171,27 +195,29 @@ void application_base::startup(boost::asio::io_context& io_ctx) {
       shutdown_plugins();
       throw;
    }
-
-#ifdef SIGHUP
-   std::shared_ptr<boost::asio::signal_set> sighup_set(new boost::asio::signal_set(io_ctx, SIGHUP));
-   start_sighup_handler( sighup_set );
-#endif
 }
 
-void application_base::start_sighup_handler( std::shared_ptr<boost::asio::signal_set> sighup_set ) {
+void application_base::handle_signal(int signal_number) {
 #ifdef SIGHUP
-   sighup_set->async_wait([sighup_set, this](const boost::system::error_code& err, int /*num*/) {
-      if( err ) return;
-      post_cb(priority::medium, [sighup_set, this]() {
-         sighup_callback();
+   if(signal_number == SIGHUP) {
+      post_cb(priority::medium, [this]() {
+         if(sighup_callback)
+            sighup_callback();
          for( auto plugin : initialized_plugins ) {
             if( is_quiting() ) return;
             plugin->handle_sighup();
          }
       });
-      start_sighup_handler( sighup_set );
-   });
+      return;
+   }
 #endif
+
+#ifdef SIGPIPE
+   if(signal_number == SIGPIPE)
+      return;
+#endif
+
+   quit();
 }
 
 void application_base::register_config_type_comparison(std::type_index i, config_comparison_f comp) {
@@ -379,7 +405,7 @@ bool application_base::initialize_impl(int argc, char** argv, vector<abstract_pl
    auto error_header = [&]() { return std::string("appbase: exception thrown during plugin \"") + plugin_name + "\" initialization.\n"; };
 
    // setup handling of SIGINT/SIGTERM/SIGPIPE during initialize
-   auto ss = setup_signal_handling_on_ioc(my->_signal_catching_io_ctx);
+   my->start_signal_thread([this](int signal_number) { handle_signal(signal_number); });
 
    try {
       if(options.count("plugin") > 0)
@@ -587,7 +613,7 @@ std::filesystem::path application_base::full_config_file_path() const {
 }
 
 void application_base::set_sighup_callback(std::function<void()> callback) {
-   sighup_callback = callback;
+   sighup_callback = callback ? std::move(callback) : []() {};
 }
 
 const bpo::variables_map& application_base::get_options() const{

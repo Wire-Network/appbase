@@ -120,7 +120,7 @@ public:
       return initialize_impl(argc, argv, {find_plugin<Plugin>()...}, initialize_logging, extra_program_options_providers);
    }
 
-   void startup(boost::asio::io_context& io_ctx);
+   void startup();
 
    /**
     *  Wait until quit(), SIGINT or SIGTERM and then shutdown.
@@ -342,9 +342,10 @@ protected:
 
 private:
    // members are ordered taking into account that the last one is destructed first
-   std::function<void()> sighup_callback;
-   std::function<void()> stop_executor_cb;
-   std::function<void(int, std::function<void()>)> post_cb;
+   std::function<void()> sighup_callback = []() {};
+   std::function<void()> stop_executor_cb = []() {};
+   /// Default dispatcher is only used before application_t wires in the real executor-backed post callback.
+   std::function<void(int, std::function<void()>)> post_cb = [](int, std::function<void()> cb) { cb(); };
 
    map<std::type_index, erased_method_ptr> methods;
    map<std::type_index, erased_channel_ptr> channels;
@@ -358,14 +359,14 @@ private:
    using plugin_registration_entry = std::pair<std::string, std::function<void(application_base&)>>;
    inline static std::vector<plugin_registration_entry> plugin_registrations;
 
-   void start_sighup_handler(std::shared_ptr<boost::asio::signal_set> sighup_set);
-
    void set_program_options(const std::vector<extra_program_options_provider>& option_providers = {});
    void write_default_config(const std::filesystem::path& cfg_file);
    void print_default_config(std::ostream& os);
 
-   void wait_for_signal(std::shared_ptr<boost::asio::signal_set> ss);
-   std::shared_ptr<boost::asio::signal_set> setup_signal_handling_on_ioc(boost::asio::io_context& io_ctx);
+   /**
+    * @brief Dispatch a POSIX signal received by the application signal waiter.
+    */
+   void handle_signal(int signal_number);
 
    void handle_exception(std::exception_ptr eptr, std::string_view origin);
 };
@@ -437,7 +438,7 @@ public:
    }
 
    void startup() {
-      application_base::startup(get_io_context());
+      application_base::startup();
    }
 
    application_t() : application_base(std::make_shared<executor_t>()) {
