@@ -83,7 +83,7 @@ class application_impl {
             const int result = sigwait(&blocked_signals, &signal_number);
             if(result != 0) {
                std::cerr << "appbase failed waiting for signal: " << std::strerror(result) << std::endl;
-               break;
+               continue;
             }
 
             if(!_signal_thread_running.load(std::memory_order_acquire))
