@@ -1,9 +1,16 @@
 #include <appbase/application.hpp>
+#include <atomic>
+#include <chrono>
+#include <csignal>
 #include <iostream>
 #include <string_view>
 #include <thread>
 #include <future>
 #include <boost/exception/diagnostic_information.hpp>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 
 #define BOOST_TEST_MODULE Basic Tests
@@ -55,12 +62,18 @@ public:
       if (shutdown_counter)
          ++(*shutdown_counter);
    }
+
+   void handle_sighup() override {
+      if (sighup_counter)
+         ++(*sighup_counter);
+   }
    
    uint64_t dbsize() const { return dbsize_; }
    bool     readonly() const { return readonly_; }
    
    void     do_throw(const std::string& msg) { throw std::runtime_error(msg); }
    void     set_shutdown_counter(uint32_t &c) { shutdown_counter = &c; }
+   void     set_sighup_counter(std::atomic<uint32_t>& c) { sighup_counter = &c; }
    
    void     log(std::string_view s) const {
       if (log_)
@@ -75,7 +88,22 @@ private:
    bool      log_ {false};
    uint64_t  dbsize_ {0};
    uint32_t* shutdown_counter { nullptr };
+   std::atomic<uint32_t>* sighup_counter { nullptr };
 };
+
+/**
+ * @brief Wait until the condition becomes true or the timeout expires.
+ */
+template <typename Predicate>
+bool wait_for_condition(Predicate&& predicate, std::chrono::milliseconds timeout) {
+   const auto deadline = std::chrono::steady_clock::now() + timeout;
+   while(std::chrono::steady_clock::now() < deadline) {
+      if(predicate())
+         return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+   }
+   return predicate();
+}
 
 class pluginB : public appbase::plugin<pluginB>
 {
@@ -182,6 +210,50 @@ BOOST_AUTO_TEST_CASE(app_execution)
    app->quit();
    app_thread.join();
 }
+
+#if !defined(_WIN32) && defined(SIGHUP)
+// -----------------------------------------------------------------------------
+// Check POSIX signal handling: SIGHUP reloads, SIGTERM quits.
+// -----------------------------------------------------------------------------
+BOOST_AUTO_TEST_CASE(posix_signal_handling)
+{
+   appbase::application::register_plugin<pluginB>();
+
+   appbase::scoped_app app;
+
+   const char* argv[] = { bu::framework::current_test_case().p_name->c_str() };
+
+   BOOST_REQUIRE(app->initialize<pluginB>(sizeof(argv) / sizeof(char*), const_cast<char**>(argv)));
+
+   std::atomic<uint32_t> sighup_callback_counter{0};
+   std::atomic<uint32_t> plugin_sighup_counter{0};
+   app->set_sighup_callback([&]() { ++sighup_callback_counter; });
+   app->get_plugin<pluginA>().set_sighup_counter(plugin_sighup_counter);
+
+   std::promise<void> startup_promise;
+   auto startup_fut = startup_promise.get_future();
+   std::thread app_thread([&]() {
+      app->startup();
+      startup_promise.set_value();
+      app->exec();
+   });
+
+   BOOST_REQUIRE(startup_fut.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+
+   BOOST_REQUIRE(::kill(::getpid(), SIGHUP) == 0);
+   BOOST_REQUIRE(wait_for_condition(
+      [&]() {
+         return sighup_callback_counter.load() == 1 && plugin_sighup_counter.load() == 1;
+      },
+      std::chrono::seconds(5)));
+   BOOST_CHECK(!app->is_quiting());
+
+   BOOST_REQUIRE(::kill(::getpid(), SIGTERM) == 0);
+   BOOST_REQUIRE(wait_for_condition([&]() { return app->is_quiting(); }, std::chrono::seconds(5)));
+
+   app_thread.join();
+}
+#endif
 
 // -----------------------------------------------------------------------------
 // Check application lifetime managed by appbase::scoped_app

@@ -3,7 +3,6 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/asio/signal_set.hpp>
-#include <boost/algorithm/string.hpp>
 
 #include <iostream>
 #include <fstream>
@@ -11,6 +10,7 @@
 #include <future>
 #include <optional>
 
+#include <pthread.h>
 #include <unistd.h>
 #include <signal.h>
 
@@ -28,17 +28,11 @@ class application_impl {
 
 #ifdef _WIN32
       application_impl():_app_options("Application Options"){}
+      void start_signal_thread() {}
+      void stop_signal_thread() {}
 #else
 
       application_impl():_app_options("Application Options"){
-         // Create a separate thread to handle signals, so that they don't interrupt I/O.
-         // stdio does not recover from EINTR.
-         _signal_catching_thread = std::thread([&ioctx = _signal_catching_io_ctx]() {
-            auto workwork = boost::asio::make_work_guard(ioctx);
-            ioctx.run();
-         });
-
-         // after creating the thread for handling signals, we can block signals in the current thread
          sigset_t blocked_signals;
          get_target_sigset(&blocked_signals);
          pthread_sigmask(SIG_BLOCK, &blocked_signals, nullptr);
@@ -52,11 +46,35 @@ class application_impl {
          sigaddset(blocked_signals, SIGHUP);
       }
 
-      ~application_impl() {
+      /**
+       * @brief Start the signal io_context after signal_set has installed its process-wide handlers.
+       */
+      void start_signal_thread() {
+         if(_signal_catching_thread.joinable())
+            return;
+
+         _signal_catching_thread = std::thread([this]() {
+            sigset_t blocked_signals;
+            get_target_sigset(&blocked_signals);
+            pthread_sigmask(SIG_UNBLOCK, &blocked_signals, nullptr);
+
+            auto workwork = boost::asio::make_work_guard(_signal_catching_io_ctx);
+            _signal_catching_io_ctx.run();
+         });
+      }
+
+      /**
+       * @brief Stop the dedicated signal io_context thread.
+       */
+      void stop_signal_thread() {
          if(_signal_catching_thread.joinable()) {
             _signal_catching_io_ctx.stop();
             _signal_catching_thread.join();
          }
+      }
+
+      ~application_impl() {
+         stop_signal_thread();
 
          // need to unblock signals, otherwise next thread created will inherit blocked signals
          sigset_t blocked_signals;
@@ -104,7 +122,10 @@ application_base::application_base(std::shared_ptr<void>&& e) :
    register_config_type<std::filesystem::path>();
 }
 
-application_base::~application_base() { }
+application_base::~application_base() {
+   // Stop before callbacks/plugin lists are destroyed; application_impl's destructor is only a final safety net.
+   my->stop_signal_thread();
+}
 
 void application_base::set_version(uint64_t version) {
   my->_version = version;
@@ -380,6 +401,7 @@ bool application_base::initialize_impl(int argc, char** argv, vector<abstract_pl
 
    // setup handling of SIGINT/SIGTERM/SIGPIPE during initialize
    auto ss = setup_signal_handling_on_ioc(my->_signal_catching_io_ctx);
+   my->start_signal_thread();
 
    try {
       if(options.count("plugin") > 0)
