@@ -21,11 +21,11 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads)
 
+# appbase is built as a wire-sysio component; the superproject's vcpkg
+# toolchain defines the Boost targets (statically linked) before this
+# directory is added. There is intentionally no standalone Boost lookup.
 if(NOT TARGET Boost::program_options)
-  find_package(Boost 1.83 EXACT REQUIRED COMPONENTS program_options system)
-  if(NOT TARGET Boost::program_options)
-    message(FATAL_ERROR "Boost::program_options not found")
-  endif()
+  message(FATAL_ERROR "Boost::program_options target not defined; appbase is built as part of wire-sysio, whose toolchain provides the Boost targets.")
 endif()
 
 if( APPLE )
@@ -90,10 +90,10 @@ endif()
 install( TARGETS
    appbase
 
-   RUNTIME DESTINATION ${CMAKE_INSTALL_FULL_BINDIR} ${INSTALL_COMPONENT_ARGS}
-   LIBRARY DESTINATION ${CMAKE_INSTALL_FULL_LIBDIR} ${INSTALL_COMPONENT_ARGS}
-   ARCHIVE DESTINATION ${CMAKE_INSTALL_FULL_LIBDIR} ${INSTALL_COMPONENT_ARGS}
-   PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_FULL_INCLUDEDIR}/appbase ${INSTALL_COMPONENT_ARGS}
+   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} ${INSTALL_COMPONENT_ARGS}
+   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} ${INSTALL_COMPONENT_ARGS}
+   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} ${INSTALL_COMPONENT_ARGS}
+   PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/appbase ${INSTALL_COMPONENT_ARGS}
 )
 
 add_subdirectory( examples )
