@@ -11,7 +11,7 @@ plugins are configured, initialized, started, and shutdown in the proper order.
 - Automatically Load Dependent Plugins in Order
 - Plugins can specify commandline arguments and configuration file options
 - Program gracefully exits from SIGINT, SIGTERM, and SIGPIPE
-- Minimal Dependencies (Boost 1.60, c++14)
+- Minimal dependencies (Boost, provided by the superproject's toolchain)
 
 ## Defining a Plugin
 
@@ -113,14 +113,18 @@ all asynchronous operations posted to the io_context should be run in the same t
 
 To trigger a graceful exit call `appbase::app().quit()` or send SIGTERM, SIGINT, or SIGPIPE to the process.
 
-## Dependencies 
+## Building
 
-1. c++14 or newer  (clang or g++)
-2. Boost 1.60 or newer compiled with C++14 support
+appbase is built as a component of
+[wire-sysio](https://github.com/Wire-Network/wire-sysio), which vendors this
+repository as a submodule. The superproject's vcpkg toolchain defines the
+Boost targets (statically linked into the portable wire-sysio binaries,
+currently Boost 1.89) before this directory is configured, so there is
+intentionally **no standalone Boost lookup** here — configuring appbase out
+of tree stops with a clear `FATAL_ERROR`. Install rules use relative
+GNUInstallDirs destinations so the superproject's packaging can stage them
+against its packaging prefix.
 
-To compile boost with c++14 use:
-
-```
-./b2 ...  cxxflags="-std=c++0x -stdlib=libc++" linkflags="-stdlib=libc++" ...
-```
+There is likewise no standalone CI workflow: appbase is compiled and tested
+by wire-sysio CI on every run.
 
