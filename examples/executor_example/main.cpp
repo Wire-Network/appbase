@@ -28,7 +28,7 @@ class chain_plugin : public appbase::plugin<chain_plugin>
                ;
      }
 
-     void plugin_initialize( const variables_map& options ) { std::cout << "initialize chain plugin\n"; }
+     void plugin_initialize( [[maybe_unused]] const variables_map& options ) { std::cout << "initialize chain plugin\n"; }
      void plugin_startup()  { std::cout << "starting chain plugin \n"; }
      void plugin_shutdown() { std::cout << "shutdown chain plugin \n"; }
 
@@ -46,7 +46,7 @@ class net_plugin : public appbase::plugin<net_plugin>
 
      APPBASE_PLUGIN_REQUIRES( (chain_plugin) );
 
-     virtual void set_program_options( options_description& cli, options_description& cfg ) override
+     virtual void set_program_options( [[maybe_unused]] options_description& cli, options_description& cfg ) override
      {
         cfg.add_options()
               ("listen-endpoint", bpo::value<string>()->default_value( "127.0.0.1:9876" ), "The local IP address and port to listen for incoming connections.")
@@ -55,7 +55,7 @@ class net_plugin : public appbase::plugin<net_plugin>
               ;
      }
 
-     void plugin_initialize( const variables_map& options ) { std::cout << "initialize net plugin\n"; }
+     void plugin_initialize( [[maybe_unused]] const variables_map& options ) { std::cout << "initialize net plugin\n"; }
      void plugin_startup()  { std::cout << "starting net plugin \n"; }
      void plugin_shutdown() { std::cout << "shutdown net plugin \n"; }
 
