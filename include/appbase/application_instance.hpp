@@ -18,8 +18,9 @@ public:
       return _name;
    }
 
+   /// Registers dependencies without performing lifecycle operations on the registered plugins.
    virtual void register_dependencies() {
-      static_cast<Impl*>(this)->plugin_requires([&](auto& plug) {});
+      static_cast<Impl*>(this)->plugin_requires([&]([[maybe_unused]] auto& plug) {});
    }
 
    virtual void initialize(const variables_map& options) final {
