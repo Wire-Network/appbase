@@ -29,7 +29,7 @@ class pluginA : public appbase::plugin<pluginA>
 public:
    APPBASE_PLUGIN_REQUIRES();
 
-   virtual void set_program_options( options_description& cli, options_description& cfg ) override {
+   virtual void set_program_options( options_description& cli, [[maybe_unused]] options_description& cfg ) override {
       cli.add_options()
          ("readonly", "open db in read only mode")
          ("dbsize", bpo::value<uint64_t>()->default_value( 8*1024 ), "Minimum size MB of database shared memory file")
@@ -115,7 +115,7 @@ public:
 
    APPBASE_PLUGIN_REQUIRES( (pluginA) );
 
-   virtual void set_program_options( options_description& cli, options_description& cfg ) override {
+   virtual void set_program_options( options_description& cli, [[maybe_unused]] options_description& cfg ) override {
       cli.add_options()
          ("endpoint", bpo::value<string>()->default_value( "127.0.0.1:9876" ), "address and port.")
          ("log2", "log messages" )

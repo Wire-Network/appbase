@@ -19,9 +19,9 @@ class thready_plugin : public appbase::plugin<thready_plugin> {
    public:
 
      template <typename Lambda>
-     void plugin_requires(Lambda&& l) {}
+     void plugin_requires([[maybe_unused]] Lambda&& l) {}
 
-     void set_program_options( options_description& cli, options_description& cfg ) override {}
+     void set_program_options( [[maybe_unused]] options_description& cli, [[maybe_unused]] options_description& cfg ) override {}
 
      void thread_work() {
         boost::asio::post(ctx, [&]() {
@@ -32,7 +32,7 @@ class thready_plugin : public appbase::plugin<thready_plugin> {
 	});
      }
 
-     void plugin_initialize( const variables_map& options ) {}
+     void plugin_initialize( [[maybe_unused]] const variables_map& options ) {}
      void plugin_startup()  {
         for(unsigned i = 0; i < 48*4; i++)
            thread_work();

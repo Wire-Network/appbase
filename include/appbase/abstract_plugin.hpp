@@ -7,9 +7,10 @@
 
 #define APPBASE_PLUGIN_REQUIRES_VISIT(r, visitor, elem) visitor(appbase::app()._register_plugin<elem>());
 
+/// Visits required plugins; an empty dependency list does not invoke the visitor.
 #define APPBASE_PLUGIN_REQUIRES(PLUGINS)                                                                               \
    template <typename Lambda>                                                                                          \
-   void plugin_requires(Lambda&& l) {                                                                                  \
+   void plugin_requires([[maybe_unused]] Lambda&& l) {                                                                 \
       BOOST_PP_SEQ_FOR_EACH(APPBASE_PLUGIN_REQUIRES_VISIT, l, PLUGINS)                                                 \
    }
 
